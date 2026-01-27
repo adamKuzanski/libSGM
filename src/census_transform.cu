@@ -209,19 +209,52 @@ namespace sgm
                     {
                         const int smem_x = tid;
                         const int smem_y = (half_kh + i) % SMEM_BUFFER_SIZE;
-                        const auto a = smem_lines[smem_y][smem_x];
+                        const auto center = smem_lines[smem_y][smem_x];
                         feature_type f = 0;
+                        
+                        // Classic census: compare center with all neighbors except itself
+                        // 9x7 window = 63 pixels, minus center = 62 bits
+                        #pragma unroll
                         for (int dy = -half_kh; dy <= half_kh; ++dy)
                         {
-                            for (int dx = -half_kw; dx <= half_kw; ++dx)
+                            const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
+                            
+                            // Load entire row into registers
+                            const pixel_type p_m4 = smem_lines[smem_y1][smem_x - 4];
+                            const pixel_type p_m3 = smem_lines[smem_y1][smem_x - 3];
+                            const pixel_type p_m2 = smem_lines[smem_y1][smem_x - 2];
+                            const pixel_type p_m1 = smem_lines[smem_y1][smem_x - 1];
+                            const pixel_type p_0  = smem_lines[smem_y1][smem_x];
+                            const pixel_type p_p1 = smem_lines[smem_y1][smem_x + 1];
+                            const pixel_type p_p2 = smem_lines[smem_y1][smem_x + 2];
+                            const pixel_type p_p3 = smem_lines[smem_y1][smem_x + 3];
+                            const pixel_type p_p4 = smem_lines[smem_y1][smem_x + 4];
+                            
+                            if (dy != 0)
                             {
-                                if (dx != 0 && dy != 0)
-                                {
-                                    const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
-                                    const int smem_x1 = smem_x + dx;
-                                    const auto b = smem_lines[smem_y1][smem_x1];
-                                    f = (f << 1) | (a > b);
-                                }
+                                // Non-center rows: all 9 pixels
+                                f = (f << 1) | (center > p_m4);
+                                f = (f << 1) | (center > p_m3);
+                                f = (f << 1) | (center > p_m2);
+                                f = (f << 1) | (center > p_m1);
+                                f = (f << 1) | (center > p_0);
+                                f = (f << 1) | (center > p_p1);
+                                f = (f << 1) | (center > p_p2);
+                                f = (f << 1) | (center > p_p3);
+                                f = (f << 1) | (center > p_p4);
+                            }
+                            else
+                            {
+                                // Center row: skip center pixel (8 pixels)
+                                f = (f << 1) | (center > p_m4);
+                                f = (f << 1) | (center > p_m3);
+                                f = (f << 1) | (center > p_m2);
+                                f = (f << 1) | (center > p_m1);
+                                // skip p_0 (center pixel)
+                                f = (f << 1) | (center > p_p1);
+                                f = (f << 1) | (center > p_p2);
+                                f = (f << 1) | (center > p_p3);
+                                f = (f << 1) | (center > p_p4);
                             }
                         }
                         dest[x + y * width] = f;
