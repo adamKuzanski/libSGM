@@ -108,40 +108,45 @@ namespace sgm
                     // Compute and store
                     const int x = x0 + tid;
                     const int y = y0 + i;
-                    if (half_kw <= x && x < width - half_kw && half_kh <= y && y < height - half_kh)
+                    if (half_kw <= x &&        //
+                        x < width - half_kw && //
+                        half_kh <= y &&        //
+                        y < height - half_kh)
                     {
                         const int smem_x = tid;
                         const int smem_y = (half_kh + i) % SMEM_BUFFER_SIZE;
                         const auto center = smem_lines[smem_y][smem_x];
                         feature_type f = 0;
 
-                        // Center-weighted sampling pattern (matching CensusCostCalculator):
-                        // - Skip extreme columns (dx = -4 and dx = +4)
-                        // - Use middle columns (dx = -1 and dx = +1) twice at start/end of each row
-                        // This gives better stereo matching quality
+                        // Center-weighted pattern
+                        #pragma unroll
                         for (int dy = -half_kh; dy <= half_kh; ++dy)
                         {
                             const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
+                            
+                            // Load all 7 unique neighbor values into registers from x-3 to x+3
+                            const pixel_type p_m3 = smem_lines[smem_y1][smem_x - 3];
+                            const pixel_type p_m2 = smem_lines[smem_y1][smem_x - 2];
+                            const pixel_type p_m1 = smem_lines[smem_y1][smem_x - 1];
+                            const pixel_type p_0  = smem_lines[smem_y1][smem_x];
+                            const pixel_type p_p1 = smem_lines[smem_y1][smem_x + 1];
+                            const pixel_type p_p2 = smem_lines[smem_y1][smem_x + 2];
+                            const pixel_type p_p3 = smem_lines[smem_y1][smem_x + 3];
 
-                            // First: sample at dx = -1 (middle column, used at beginning)
-                            {
-                                const auto b = smem_lines[smem_y1][smem_x - 1];
-                                f = (f << 1) | (center > b);
-                            }
+                            // Pre-compute comparisons that are used twice
+                            const feature_type cmp_m1 = center > p_m1;
+                            const feature_type cmp_p1 = center > p_p1;
 
-                            // Then: sample from dx = -3 to dx = +3 (skipping extreme cols -4 and +4)
-                            for (int dx = -half_kw + 1; dx < half_kw; ++dx)
-                            {
-                                const int smem_x1 = smem_x + dx;
-                                const auto b = smem_lines[smem_y1][smem_x1];
-                                f = (f << 1) | (center > b);
-                            }
-
-                            // Last: sample at dx = +1 (middle column, used at end)
-                            {
-                                const auto b = smem_lines[smem_y1][smem_x + 1];
-                                f = (f << 1) | (center > b);
-                            }
+                            // Build 9 bits per row from registers
+                            f = (f << 1) | cmp_m1;           // dx = -1 
+                            f = (f << 1) | (center > p_m3);  // dx = -3
+                            f = (f << 1) | (center > p_m2);  // dx = -2
+                            f = (f << 1) | cmp_m1;           // dx = -1
+                            f = (f << 1) | (center > p_0);   // dx =  0
+                            f = (f << 1) | cmp_p1;           // dx = +1
+                            f = (f << 1) | (center > p_p2);  // dx = +2
+                            f = (f << 1) | (center > p_p3);  // dx = +3
+                            f = (f << 1) | cmp_p1;           // dx = +1
                         }
                         dest[x + y * width] = f;
                     }
@@ -318,7 +323,7 @@ namespace sgm
         {
             const int width = src.cols;
             const int height = src.rows;
-            sgm::ImageType dstType = getSgmTypeForCensusConfig(type);
+            const sgm::ImageType dstType = getSgmTypeForCensusConfig(type);
 
             const int width_per_block = BLOCK_SIZE - WINDOW_WIDTH + 1;
             const int height_per_block = LINES_PER_BLOCK;
