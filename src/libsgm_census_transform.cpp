@@ -7,7 +7,7 @@
 
 namespace
 {
-    sgm::ImageType getSourceImageType(const int srcDepth)
+    inline sgm::ImageType getSourceImageType(const int srcDepth)
     {
         using namespace sgm;
 
@@ -20,34 +20,34 @@ namespace
             case 32:
                 return SGM_32U;
             default:
-                throw std::invalid_argument("src depth bits must be 8, 16 or 32");
+                throw std::invalid_argument("Source depth bits must be 8, 16 or 32");
         }
     }
 
-    sgm::ImageType getDestinationImageType(const sgm::CensusType censusType)
+    inline sgm::ImageType getDestinationImageType(const sgm::CensusType censusType)
     {
-        using namespace sgm;
-
         switch (censusType)
         {
-            case CensusType::CENSUS_9x7:
-                return SGM_64U;
+            case sgm::CensusType::CENSUS_9x7:
+                return sgm::SGM_64U;
+            case sgm::CensusType::CLASSIC_CENSUS_9x7:
+                return sgm::SGM_64U;
             default:
-                return SGM_32U;
+                return sgm::SGM_32U;
         }
     }
 
-    bool isSourceDevicePointer(const sgm::ExecuteInOut inoutType)
+    inline bool isSourceDevicePointer(const sgm::ExecuteInOut inoutType)
     {
         return (inoutType & 0x01) > 0;
     }
 
-    bool isDestinationDevicePointer(const sgm::ExecuteInOut inoutType)
+    inline bool isDestinationDevicePointer(const sgm::ExecuteInOut inoutType)
     {
         return (inoutType & 0x02) > 0;
     }
 
-    size_t getElementSize(const sgm::ImageType imageType)
+    inline size_t getElementSize(const sgm::ImageType imageType)
     {
         return imageType == sgm::SGM_64U ? sizeof(uint64_t) : sizeof(uint32_t);
     }
@@ -78,7 +78,7 @@ namespace sgm
             m_dstPitch(dstPitch),
             m_censusType(censusType)
         {
-            SGM_ASSERT(srcDepth == 8 || srcDepth == 16 || srcDepth == 32, "src depth bits must be 8, 16 or 32");
+            SGM_ASSERT(srcDepth == 8 || srcDepth == 16 || srcDepth == 32, "Source depth bits must be 8, 16 or 32");
 
             m_srcType = getSourceImageType(srcDepth);
             m_dstType = getDestinationImageType(censusType);
@@ -90,9 +90,7 @@ namespace sgm
                 m_dSrc.create(height, width, m_srcType, srcPitch);
             }
 
-            // Allocate device memory for census output and fill it with zeros
-            m_dCensus.create(height, width, m_dstType);
-            m_dCensus.fill_zero();
+            prepareDeviceMemoryForCensusOutput();
         }
 
         void execute(const void *src, void *dst)
@@ -102,12 +100,14 @@ namespace sgm
             copyResultToDestination(dst);
         }
 
-        int getOutputElementSize() const
+    private:
+        //! \brief Allocates memory for Census output on the device.
+        void prepareDeviceMemoryForCensusOutput()
         {
-            return m_censusType == CensusType::CENSUS_9x7 ? 8 : 4;
+            m_dCensus.create(m_height, m_width, m_dstType, m_dstPitch);
+            m_dCensus.fill_zero();
         }
 
-    private:
         //! \brief Prepare source data for census transform. Upload to device if needed or wrap device pointer.\
         //! \param src Pointer to source data (host or device memory based on \p m_isSrcDevptr).
         void processSourceData(const void *src)
@@ -179,10 +179,4 @@ namespace sgm
     {
         impl_->execute(src, dst);
     }
-
-    int CensusTransform::getOutputElementSize() const
-    {
-        return impl_->getOutputElementSize();
-    }
-
 }

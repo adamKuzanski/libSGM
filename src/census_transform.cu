@@ -25,6 +25,24 @@ namespace sgm
 {
     namespace
     {
+        inline ImageType getSgmTypeForCensusConfig(const sgm::CensusType type)
+        {
+            switch (type)
+            {
+                case CensusType::CENSUS_9x7:
+                    return sgm::SGM_64U;
+                case CensusType::CLASSIC_CENSUS_9x7:
+                    return sgm::SGM_64U;
+                case CensusType::SYMMETRIC_CENSUS_9x7:
+                    return sgm::SGM_32U;
+                default:
+                    throw std::runtime_error("Unsupported CensusType");
+            }
+        }
+    }
+
+    namespace
+    {
 
         static constexpr int WINDOW_WIDTH = 9;
         static constexpr int WINDOW_HEIGHT = 7;
@@ -300,13 +318,14 @@ namespace sgm
         {
             const int width = src.cols;
             const int height = src.rows;
+            sgm::ImageType dstType = getSgmTypeForCensusConfig(type);
 
             const int width_per_block = BLOCK_SIZE - WINDOW_WIDTH + 1;
             const int height_per_block = LINES_PER_BLOCK;
             const dim3 gdim(divUp(width, width_per_block), divUp(height, height_per_block));
             const dim3 bdim(BLOCK_SIZE);
 
-            dst.create(height, width, type == CensusType::CENSUS_9x7 ? SGM_64U : SGM_32U);
+            dst.create(height, width, dstType);
 
             if (type == CensusType::CENSUS_9x7)
             {

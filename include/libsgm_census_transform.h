@@ -4,19 +4,16 @@
 
 namespace sgm
 {
-    //! \brief CensusTransform class
+    //! \brief CensusTransform class providing standalone access to the Census Transform algorithm.
     //!
-    //! This class provides standalone access to the Census Transform algorithm,
-    //! which computes a binary feature descriptor for each pixel based on intensity
-    //! comparisons with neighboring pixels.
-    //!
-    //! \details The census transform compares each pixel with its neighbors in a
-    //! 9x7 window. Two types are supported:
-    //! - CENSUS_9x7: Standard census transform producing 64-bit descriptors
-    //! - SYMMETRIC_CENSUS_9x7: Symmetric variant producing 32-bit descriptors
+    //! \details The census transform compares each pixel with its neighbors in a fixed 9x7 window.
+    //! Three Census types are supported:
+    //! - CENSUS_9x7: Standard census transform producing 64-bit descriptors.
+    //! - CENSUS_9x7_WEIGHTED: Weighted variant producing 64-bit descriptors.
+    //! - SYMMETRIC_CENSUS_9x7: Symmetric variant producing 32-bit descriptors.
     //!
     //! \note The output buffer must be allocated by the user with appropriate size:
-    //! - For CENSUS_9x7: width * height * sizeof(uint64_t) bytes
+    //! - For CENSUS_9x7 and CENSUS_9x7_WEIGHTED: width * height * sizeof(uint64_t) bytes
     //! - For SYMMETRIC_CENSUS_9x7: width * height * sizeof(uint32_t) bytes
     class CensusTransform
     {
@@ -30,7 +27,7 @@ namespace sgm
                                    const int height,              //
                                    const int input_depth_bits,    //
                                    const ExecuteInOut inout_type, //
-                                   const CensusType census_type = CensusType::CENSUS_9x7);
+                                   const CensusType census_type);
 
         //! \param width Image width in pixels.
         //! \param height Image height in pixels.
@@ -45,7 +42,7 @@ namespace sgm
                                    const int src_pitch,           //
                                    const int dst_pitch,           //
                                    const ExecuteInOut inout_type, //
-                                   const CensusType census_type = CensusType::CENSUS_9x7);
+                                   const CensusType census_type);
 
         LIBSGM_API virtual ~CensusTransform();
 
@@ -56,16 +53,12 @@ namespace sgm
         //! \attention For SYMMETRIC_CENSUS_9x7, allocate width * height * sizeof(uint32_t) bytes.
         LIBSGM_API void execute(const void *src, void *dst);
 
-        //! \brief Get the output element size in bytes based on census type.
-        //! \return 8 for CENSUS_9x7, 4 for SYMMETRIC_CENSUS_9x7.
-        LIBSGM_API int getOutputElementSize() const;
-
     private:
-        CensusTransform(const CensusTransform &);
-        CensusTransform &operator=(const CensusTransform &);
+        CensusTransform(const CensusTransform &) = delete;
+        CensusTransform &operator=(const CensusTransform &) = delete;
 
         class Impl;
         Impl *impl_;
     };
 
-} // namespace sgm
+}
