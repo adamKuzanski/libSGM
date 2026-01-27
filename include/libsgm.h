@@ -72,7 +72,8 @@ enum class PathType
 enum class CensusType
 {
 	CENSUS_9x7,
-	SYMMETRIC_CENSUS_9x7
+	SYMMETRIC_CENSUS_9x7,
+	CLASSIC_CENSUS_9x7
 };
 
 /**

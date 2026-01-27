@@ -18,220 +18,326 @@ limitations under the License.
 
 #include <cuda_runtime.h>
 
-#include "types.h"
 #include "host_utility.h"
+#include "types.h"
 
 namespace sgm
 {
-namespace
-{
+    namespace
+    {
 
-static constexpr int WINDOW_WIDTH  = 9;
-static constexpr int WINDOW_HEIGHT = 7;
+        static constexpr int WINDOW_WIDTH = 9;
+        static constexpr int WINDOW_HEIGHT = 7;
 
-static constexpr int BLOCK_SIZE = 128;
-static constexpr int LINES_PER_BLOCK = 16;
+        static constexpr int BLOCK_SIZE = 128;
+        static constexpr int LINES_PER_BLOCK = 16;
 
-template <typename T>
-__global__ void census_transform_kernel(uint64_t* dest, const T* src, int width, int height, int pitch)
-{
-	using pixel_type = T;
-	using feature_type = uint64_t;
+        template<typename T>
+        __global__ void census_transform_kernel(uint64_t *dest, const T *src, int width, int height, int pitch)
+        {
+            using pixel_type = T;
+            using feature_type = uint64_t;
 
-	static const int SMEM_BUFFER_SIZE = WINDOW_HEIGHT + 1;
+            static const int SMEM_BUFFER_SIZE = WINDOW_HEIGHT + 1;
 
-	const int half_kw = WINDOW_WIDTH / 2;
-	const int half_kh = WINDOW_HEIGHT / 2;
+            const int half_kw = WINDOW_WIDTH / 2;
+            const int half_kh = WINDOW_HEIGHT / 2;
 
-	__shared__ pixel_type smem_lines[SMEM_BUFFER_SIZE][BLOCK_SIZE];
+            __shared__ pixel_type smem_lines[SMEM_BUFFER_SIZE][BLOCK_SIZE];
 
-	const int tid = threadIdx.x;
-	const int x0 = blockIdx.x * (BLOCK_SIZE - WINDOW_WIDTH + 1) - half_kw;
-	const int y0 = blockIdx.y * LINES_PER_BLOCK;
-	const int x = x0 + tid;
+            const int tid = threadIdx.x;
+            const int x0 = blockIdx.x * (BLOCK_SIZE - WINDOW_WIDTH + 1) - half_kw;
+            const int y0 = blockIdx.y * LINES_PER_BLOCK;
+            const int x = x0 + tid;
 
-	// load pixel value for every row in the given window.
-	for (int i = 0; i < WINDOW_HEIGHT; ++i) {
-		const int y = y0 - half_kh + i;
+            // load pixel value for every row in the given window.
+            for (int i = 0; i < WINDOW_HEIGHT; ++i)
+            {
+                const int y = y0 - half_kh + i;
 
-		pixel_type value = 0;
-		if (0 <= x && x < width && 0 <= y && y < height) {
-			value = src[x + y * pitch];
-		}
+                pixel_type value = 0;
+                if (0 <= x && x < width && 0 <= y && y < height)
+                {
+                    value = src[x + y * pitch];
+                }
 
-		const int smem_x = tid;
-		const int smem_y = i;
-		smem_lines[smem_y][smem_x] = value;
-	}
-	__syncthreads();
-
-#pragma unroll
-	for (int i = 0; i < LINES_PER_BLOCK; ++i) {
-		// we don't need to load on the last iteration
-		if (i + 1 < LINES_PER_BLOCK) {
-			// Load to smem
-			const int y = y0 + half_kh + i + 1;
-			pixel_type value = 0;
-			if (0 <= x && x < width && 0 <= y && y < height) {
-				value = src[x + y * pitch];
-			}
-			const int smem_x = tid;
-			const int smem_y = (WINDOW_HEIGHT + i) % SMEM_BUFFER_SIZE;
-			smem_lines[smem_y][smem_x] = value;
-		}
-
-		if (half_kw <= tid && tid < BLOCK_SIZE - half_kw) {
-			// Compute and store
-			const int x = x0 + tid;
-			const int y = y0 + i;
-			if (half_kw <= x && x < width - half_kw && half_kh <= y && y < height - half_kh) {
-				const int smem_x = tid;
-				const int smem_y = (half_kh + i) % SMEM_BUFFER_SIZE;
-				const auto center = smem_lines[smem_y][smem_x];
-				feature_type f = 0;
-				
-				// Center-weighted sampling pattern (matching CensusCostCalculator):
-				// - Skip extreme columns (dx = -4 and dx = +4)
-				// - Use middle columns (dx = -1 and dx = +1) twice at start/end of each row
-				// This gives better stereo matching quality
-				for (int dy = -half_kh; dy <= half_kh; ++dy) {
-					const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
-					
-					// First: sample at dx = -1 (middle column, used at beginning)
-					{
-						const auto b = smem_lines[smem_y1][smem_x - 1];
-						f = (f << 1) | (center > b);
-					}
-					
-					// Then: sample from dx = -3 to dx = +3 (skipping extreme cols -4 and +4)
-					for (int dx = -half_kw + 1; dx < half_kw; ++dx) {
-						const int smem_x1 = smem_x + dx;
-						const auto b = smem_lines[smem_y1][smem_x1];
-						f = (f << 1) | (center > b);
-					}
-					
-					// Last: sample at dx = +1 (middle column, used at end)
-					{
-						const auto b = smem_lines[smem_y1][smem_x + 1];
-						f = (f << 1) | (center > b);
-					}
-				}
-				dest[x + y * width] = f;
-			}
-		}
-		__syncthreads();
-	}
-}
-
-template <typename T>
-__global__ void symmetric_census_kernel(uint32_t* dest, const T* src, int width, int height, int pitch)
-{
-	using pixel_type = T;
-	using feature_type = uint32_t;
-
-	static const int SMEM_BUFFER_SIZE = WINDOW_HEIGHT + 1;
-
-	const int half_kw = WINDOW_WIDTH  / 2;
-	const int half_kh = WINDOW_HEIGHT / 2;
-
-	__shared__ pixel_type smem_lines[SMEM_BUFFER_SIZE][BLOCK_SIZE];
-
-	const int tid = threadIdx.x;
-	const int x0 = blockIdx.x * (BLOCK_SIZE - WINDOW_WIDTH + 1) - half_kw;
-	const int y0 = blockIdx.y * LINES_PER_BLOCK;
-
-	for(int i = 0; i < WINDOW_HEIGHT; ++i){
-		const int x = x0 + tid, y = y0 - half_kh + i;
-		pixel_type value = 0;
-		if(0 <= x && x < width && 0 <= y && y < height){
-			value = src[x + y * pitch];
-		}
-		smem_lines[i][tid] = value;
-	}
-	__syncthreads();
+                const int smem_x = tid;
+                const int smem_y = i;
+                smem_lines[smem_y][smem_x] = value;
+            }
+            __syncthreads();
 
 #pragma unroll
-	for(int i = 0; i < LINES_PER_BLOCK; ++i){
-		if(i + 1 < LINES_PER_BLOCK){
-			// Load to smem
-			const int x = x0 + tid, y = y0 + half_kh + i + 1;
-			pixel_type value = 0;
-			if(0 <= x && x < width && 0 <= y && y < height){
-				value = src[x + y * pitch];
-			}
-			const int smem_x = tid;
-			const int smem_y = (WINDOW_HEIGHT + i) % SMEM_BUFFER_SIZE;
-			smem_lines[smem_y][smem_x] = value;
-		}
+            for (int i = 0; i < LINES_PER_BLOCK; ++i)
+            {
+                // we don't need to load on the last iteration
+                if (i + 1 < LINES_PER_BLOCK)
+                {
+                    // Load to smem
+                    const int y = y0 + half_kh + i + 1;
+                    pixel_type value = 0;
+                    if (0 <= x && x < width && 0 <= y && y < height)
+                    {
+                        value = src[x + y * pitch];
+                    }
+                    const int smem_x = tid;
+                    const int smem_y = (WINDOW_HEIGHT + i) % SMEM_BUFFER_SIZE;
+                    smem_lines[smem_y][smem_x] = value;
+                }
 
-		if(half_kw <= tid && tid < BLOCK_SIZE - half_kw){
-			// Compute and store
-			const int x = x0 + tid, y = y0 + i;
-			if(half_kw <= x && x < width - half_kw && half_kh <= y && y < height - half_kh){
-				const int smem_x = tid;
-				const int smem_y = (half_kh + i) % SMEM_BUFFER_SIZE;
-				feature_type f = 0;
-				for(int dy = -half_kh; dy < 0; ++dy){
-					const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
-					const int smem_y2 = (smem_y - dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
-					for(int dx = -half_kw; dx <= half_kw; ++dx){
-						const int smem_x1 = smem_x + dx;
-						const int smem_x2 = smem_x - dx;
-						const auto a = smem_lines[smem_y1][smem_x1];
-						const auto b = smem_lines[smem_y2][smem_x2];
-						f = (f << 1) | (a > b);
-					}
-				}
-				for(int dx = -half_kw; dx < 0; ++dx){
-					const int smem_x1 = smem_x + dx;
-					const int smem_x2 = smem_x - dx;
-					const auto a = smem_lines[smem_y][smem_x1];
-					const auto b = smem_lines[smem_y][smem_x2];
-					f = (f << 1) | (a > b);
-				}
-				dest[x + y * width] = f;
-			}
-		}
-		__syncthreads();
-	}
-}
+                if (half_kw <= tid && tid < BLOCK_SIZE - half_kw)
+                {
+                    // Compute and store
+                    const int x = x0 + tid;
+                    const int y = y0 + i;
+                    if (half_kw <= x && x < width - half_kw && half_kh <= y && y < height - half_kh)
+                    {
+                        const int smem_x = tid;
+                        const int smem_y = (half_kh + i) % SMEM_BUFFER_SIZE;
+                        const auto center = smem_lines[smem_y][smem_x];
+                        feature_type f = 0;
 
-} // namespace
+                        // Center-weighted sampling pattern (matching CensusCostCalculator):
+                        // - Skip extreme columns (dx = -4 and dx = +4)
+                        // - Use middle columns (dx = -1 and dx = +1) twice at start/end of each row
+                        // This gives better stereo matching quality
+                        for (int dy = -half_kh; dy <= half_kh; ++dy)
+                        {
+                            const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
 
-namespace details
-{
+                            // First: sample at dx = -1 (middle column, used at beginning)
+                            {
+                                const auto b = smem_lines[smem_y1][smem_x - 1];
+                                f = (f << 1) | (center > b);
+                            }
 
-void census_transform(const DeviceImage& src, DeviceImage& dst, CensusType type)
-{
-	const int width = src.cols;
-	const int height = src.rows;
+                            // Then: sample from dx = -3 to dx = +3 (skipping extreme cols -4 and +4)
+                            for (int dx = -half_kw + 1; dx < half_kw; ++dx)
+                            {
+                                const int smem_x1 = smem_x + dx;
+                                const auto b = smem_lines[smem_y1][smem_x1];
+                                f = (f << 1) | (center > b);
+                            }
 
-	const int width_per_block = BLOCK_SIZE - WINDOW_WIDTH + 1;
-	const int height_per_block = LINES_PER_BLOCK;
-	const dim3 gdim(divUp(width, width_per_block), divUp(height, height_per_block));
-	const dim3 bdim(BLOCK_SIZE);
+                            // Last: sample at dx = +1 (middle column, used at end)
+                            {
+                                const auto b = smem_lines[smem_y1][smem_x + 1];
+                                f = (f << 1) | (center > b);
+                            }
+                        }
+                        dest[x + y * width] = f;
+                    }
+                }
+                __syncthreads();
+            }
+        }
 
-	dst.create(height, width, type == CensusType::CENSUS_9x7 ? SGM_64U : SGM_32U);
+        template<typename T>
+        __global__ void classic_census_transform_kernel(uint64_t *dest, const T *src, int width, int height, int pitch)
+        {
+            using pixel_type = T;
+            using feature_type = uint64_t;
 
-	if (type == CensusType::CENSUS_9x7) {
-		if (src.type == SGM_8U)
-			census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint8_t>(), width, height, src.step);
-		else if (src.type == SGM_16U)
-			census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint16_t>(), width, height, src.step);
-		else
-			census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint32_t>(), width, height, src.step);
-	}
-	else if (type == CensusType::SYMMETRIC_CENSUS_9x7) {
-		if (src.type == SGM_8U)
-			symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint8_t>(), width, height, src.step);
-		else if (src.type == SGM_16U)
-			symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint16_t>(), width, height, src.step);
-		else
-			symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint32_t>(), width, height, src.step);
-	}
+            static const int SMEM_BUFFER_SIZE = WINDOW_HEIGHT + 1;
 
-	CUDA_CHECK(cudaGetLastError());
-}
+            const int half_kw = WINDOW_WIDTH / 2;
+            const int half_kh = WINDOW_HEIGHT / 2;
 
-} // namespace details
+            __shared__ pixel_type smem_lines[SMEM_BUFFER_SIZE][BLOCK_SIZE];
+
+            const int tid = threadIdx.x;
+            const int x0 = blockIdx.x * (BLOCK_SIZE - WINDOW_WIDTH + 1) - half_kw;
+            const int y0 = blockIdx.y * LINES_PER_BLOCK;
+
+            for (int i = 0; i < WINDOW_HEIGHT; ++i)
+            {
+                const int x = x0 + tid, y = y0 - half_kh + i;
+                pixel_type value = 0;
+                if (0 <= x && x < width && 0 <= y && y < height)
+                {
+                    value = src[x + y * pitch];
+                }
+                smem_lines[i][tid] = value;
+            }
+            __syncthreads();
+
+#pragma unroll
+            for (int i = 0; i < LINES_PER_BLOCK; ++i)
+            {
+                if (i + 1 < LINES_PER_BLOCK)
+                {
+                    // Load to smem
+                    const int x = x0 + tid, y = y0 + half_kh + i + 1;
+                    pixel_type value = 0;
+                    if (0 <= x && x < width && 0 <= y && y < height)
+                    {
+                        value = src[x + y * pitch];
+                    }
+                    const int smem_x = tid;
+                    const int smem_y = (WINDOW_HEIGHT + i) % SMEM_BUFFER_SIZE;
+                    smem_lines[smem_y][smem_x] = value;
+                }
+
+                if (half_kw <= tid && tid < BLOCK_SIZE - half_kw)
+                {
+                    // Compute and store
+                    const int x = x0 + tid, y = y0 + i;
+                    if (half_kw <= x && x < width - half_kw && half_kh <= y && y < height - half_kh)
+                    {
+                        const int smem_x = tid;
+                        const int smem_y = (half_kh + i) % SMEM_BUFFER_SIZE;
+                        const auto a = smem_lines[smem_y][smem_x];
+                        feature_type f = 0;
+                        for (int dy = -half_kh; dy <= half_kh; ++dy)
+                        {
+                            for (int dx = -half_kw; dx <= half_kw; ++dx)
+                            {
+                                if (dx != 0 && dy != 0)
+                                {
+                                    const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
+                                    const int smem_x1 = smem_x + dx;
+                                    const auto b = smem_lines[smem_y1][smem_x1];
+                                    f = (f << 1) | (a > b);
+                                }
+                            }
+                        }
+                        dest[x + y * width] = f;
+                    }
+                }
+                __syncthreads();
+            }
+        }
+
+        template<typename T>
+        __global__ void symmetric_census_kernel(uint32_t *dest, const T *src, int width, int height, int pitch)
+        {
+            using pixel_type = T;
+            using feature_type = uint32_t;
+
+            static const int SMEM_BUFFER_SIZE = WINDOW_HEIGHT + 1;
+
+            const int half_kw = WINDOW_WIDTH / 2;
+            const int half_kh = WINDOW_HEIGHT / 2;
+
+            __shared__ pixel_type smem_lines[SMEM_BUFFER_SIZE][BLOCK_SIZE];
+
+            const int tid = threadIdx.x;
+            const int x0 = blockIdx.x * (BLOCK_SIZE - WINDOW_WIDTH + 1) - half_kw;
+            const int y0 = blockIdx.y * LINES_PER_BLOCK;
+
+            for (int i = 0; i < WINDOW_HEIGHT; ++i)
+            {
+                const int x = x0 + tid, y = y0 - half_kh + i;
+                pixel_type value = 0;
+                if (0 <= x && x < width && 0 <= y && y < height)
+                {
+                    value = src[x + y * pitch];
+                }
+                smem_lines[i][tid] = value;
+            }
+            __syncthreads();
+
+#pragma unroll
+            for (int i = 0; i < LINES_PER_BLOCK; ++i)
+            {
+                if (i + 1 < LINES_PER_BLOCK)
+                {
+                    // Load to smem
+                    const int x = x0 + tid, y = y0 + half_kh + i + 1;
+                    pixel_type value = 0;
+                    if (0 <= x && x < width && 0 <= y && y < height)
+                    {
+                        value = src[x + y * pitch];
+                    }
+                    const int smem_x = tid;
+                    const int smem_y = (WINDOW_HEIGHT + i) % SMEM_BUFFER_SIZE;
+                    smem_lines[smem_y][smem_x] = value;
+                }
+
+                if (half_kw <= tid && tid < BLOCK_SIZE - half_kw)
+                {
+                    // Compute and store
+                    const int x = x0 + tid, y = y0 + i;
+                    if (half_kw <= x && x < width - half_kw && half_kh <= y && y < height - half_kh)
+                    {
+                        const int smem_x = tid;
+                        const int smem_y = (half_kh + i) % SMEM_BUFFER_SIZE;
+                        feature_type f = 0;
+                        for (int dy = -half_kh; dy < 0; ++dy)
+                        {
+                            const int smem_y1 = (smem_y + dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
+                            const int smem_y2 = (smem_y - dy + SMEM_BUFFER_SIZE) % SMEM_BUFFER_SIZE;
+                            for (int dx = -half_kw; dx <= half_kw; ++dx)
+                            {
+                                const int smem_x1 = smem_x + dx;
+                                const int smem_x2 = smem_x - dx;
+                                const auto a = smem_lines[smem_y1][smem_x1];
+                                const auto b = smem_lines[smem_y2][smem_x2];
+                                f = (f << 1) | (a > b);
+                            }
+                        }
+                        for (int dx = -half_kw; dx < 0; ++dx)
+                        {
+                            const int smem_x1 = smem_x + dx;
+                            const int smem_x2 = smem_x - dx;
+                            const auto a = smem_lines[smem_y][smem_x1];
+                            const auto b = smem_lines[smem_y][smem_x2];
+                            f = (f << 1) | (a > b);
+                        }
+                        dest[x + y * width] = f;
+                    }
+                }
+                __syncthreads();
+            }
+        }
+
+    } // namespace
+
+    namespace details
+    {
+
+        void census_transform(const DeviceImage &src, DeviceImage &dst, CensusType type)
+        {
+            const int width = src.cols;
+            const int height = src.rows;
+
+            const int width_per_block = BLOCK_SIZE - WINDOW_WIDTH + 1;
+            const int height_per_block = LINES_PER_BLOCK;
+            const dim3 gdim(divUp(width, width_per_block), divUp(height, height_per_block));
+            const dim3 bdim(BLOCK_SIZE);
+
+            dst.create(height, width, type == CensusType::CENSUS_9x7 ? SGM_64U : SGM_32U);
+
+            if (type == CensusType::CENSUS_9x7)
+            {
+                if (src.type == SGM_8U)
+                    census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint8_t>(), width, height, src.step);
+                else if (src.type == SGM_16U)
+                    census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint16_t>(), width, height, src.step);
+                else
+                    census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint32_t>(), width, height, src.step);
+            }
+            else if (type == CensusType::SYMMETRIC_CENSUS_9x7)
+            {
+                if (src.type == SGM_8U)
+                    symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint8_t>(), width, height, src.step);
+                else if (src.type == SGM_16U)
+                    symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint16_t>(), width, height, src.step);
+                else
+                    symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint32_t>(), width, height, src.step);
+            }
+            else if (type == CensusType::CLASSIC_CENSUS_9x7)
+            {
+                if (src.type == SGM_8U)
+                    classic_census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint8_t>(), width, height, src.step);
+                else if (src.type == SGM_16U)
+                    classic_census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint16_t>(), width, height, src.step);
+                else
+                    classic_census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint32_t>(), width, height, src.step);
+            }
+
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+    } // namespace details
 } // namespace sgm
