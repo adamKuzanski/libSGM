@@ -346,8 +346,7 @@ namespace sgm
                 __syncthreads();
             }
         }
-
-    } // namespace
+    }
 
     namespace details
     {
