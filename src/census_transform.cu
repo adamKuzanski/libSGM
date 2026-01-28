@@ -351,7 +351,7 @@ namespace sgm
     namespace details
     {
 
-        void census_transform(const DeviceImage &src, DeviceImage &dst, CensusType type)
+        void census_transform(const DeviceImage &src, DeviceImage &dst, CensusType type, cudaStream_t stream)
         {
             const int width = src.cols;
             const int height = src.rows;
@@ -367,29 +367,29 @@ namespace sgm
             if (type == CensusType::CENSUS_9x7)
             {
                 if (src.type == SGM_8U)
-                    census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint8_t>(), width, height, src.step);
+                    census_transform_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint64_t>(), src.ptr<uint8_t>(), width, height, src.step);
                 else if (src.type == SGM_16U)
-                    census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint16_t>(), width, height, src.step);
+                    census_transform_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint64_t>(), src.ptr<uint16_t>(), width, height, src.step);
                 else
-                    census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint32_t>(), width, height, src.step);
+                    census_transform_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint64_t>(), src.ptr<uint32_t>(), width, height, src.step);
             }
             else if (type == CensusType::SYMMETRIC_CENSUS_9x7)
             {
                 if (src.type == SGM_8U)
-                    symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint8_t>(), width, height, src.step);
+                    symmetric_census_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint32_t>(), src.ptr<uint8_t>(), width, height, src.step);
                 else if (src.type == SGM_16U)
-                    symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint16_t>(), width, height, src.step);
+                    symmetric_census_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint32_t>(), src.ptr<uint16_t>(), width, height, src.step);
                 else
-                    symmetric_census_kernel<<<gdim, bdim>>>(dst.ptr<uint32_t>(), src.ptr<uint32_t>(), width, height, src.step);
+                    symmetric_census_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint32_t>(), src.ptr<uint32_t>(), width, height, src.step);
             }
             else if (type == CensusType::CLASSIC_CENSUS_9x7)
             {
                 if (src.type == SGM_8U)
-                    classic_census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint8_t>(), width, height, src.step);
+                    classic_census_transform_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint64_t>(), src.ptr<uint8_t>(), width, height, src.step);
                 else if (src.type == SGM_16U)
-                    classic_census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint16_t>(), width, height, src.step);
+                    classic_census_transform_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint64_t>(), src.ptr<uint16_t>(), width, height, src.step);
                 else
-                    classic_census_transform_kernel<<<gdim, bdim>>>(dst.ptr<uint64_t>(), src.ptr<uint32_t>(), width, height, src.step);
+                    classic_census_transform_kernel<<<gdim, bdim, 0, stream>>>(dst.ptr<uint64_t>(), src.ptr<uint32_t>(), width, height, src.step);
             }
 
             CUDA_CHECK(cudaGetLastError());

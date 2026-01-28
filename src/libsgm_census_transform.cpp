@@ -69,6 +69,7 @@ namespace sgm
         bool m_isDstDevptr;
         DeviceImage m_dSrc;
         DeviceImage m_dCensus;
+        cudaStream_t m_stream;
 
     public:
         Impl(const int width, const int height, const int srcDepth, const int srcPitch, const int dstPitch, ExecuteInOut inoutType, CensusType censusType) :
@@ -76,9 +77,13 @@ namespace sgm
             m_height(height),
             m_srcPitch(srcPitch),
             m_dstPitch(dstPitch),
-            m_censusType(censusType)
+            m_censusType(censusType),
+            m_stream(nullptr)
         {
             SGM_ASSERT(srcDepth == 8 || srcDepth == 16 || srcDepth == 32, "Source depth bits must be 8, 16 or 32");
+
+            // Create dedicated CUDA stream for this instance
+            CUDA_CHECK(cudaStreamCreate(&m_stream));
 
             m_srcType = getSourceImageType(srcDepth);
             m_dstType = getDestinationImageType(censusType);
@@ -91,6 +96,15 @@ namespace sgm
             }
 
             prepareDeviceMemoryForCensusOutput();
+        }
+        
+        ~Impl()
+        {
+            if (m_stream)
+            {
+                cudaStreamDestroy(m_stream);
+                m_stream = nullptr;
+            }
         }
 
         void execute(const void *src, void *dst)
@@ -105,7 +119,7 @@ namespace sgm
         void prepareDeviceMemoryForCensusOutput()
         {
             m_dCensus.create(m_height, m_width, m_dstType, m_dstPitch);
-            m_dCensus.fill_zero();
+            m_dCensus.fill_zero(m_stream);
         }
 
         //! \brief Prepare source data for census transform. Upload to device if needed or wrap device pointer.\
@@ -118,14 +132,14 @@ namespace sgm
             }
             else
             {
-                m_dSrc.upload(src);
+                m_dSrc.upload(src, m_stream);
             }
         }
 
         //! \brief Perform the census transform on the prepared source data.
         void performCensusTransform()
         {
-            details::census_transform(m_dSrc, m_dCensus, m_censusType);
+            details::census_transform(m_dSrc, m_dCensus, m_censusType, m_stream);
         }
 
         //! \brief Copy the census transform result to the destination pointer.
@@ -148,14 +162,16 @@ namespace sgm
         {
             DeviceImage d_dst(dst, m_height, m_width, m_dstType, m_dstPitch);
             const size_t elem_size = ::getElementSize(m_dstType);
-            cudaMemcpy2D(d_dst.data, d_dst.step * elem_size, m_dCensus.data, m_dCensus.step * elem_size, m_width * elem_size, m_height, cudaMemcpyDeviceToDevice);
+            cudaMemcpy2DAsync(d_dst.data, d_dst.step * elem_size, m_dCensus.data, m_dCensus.step * elem_size, m_width * elem_size, m_height, cudaMemcpyDeviceToDevice, m_stream);
+            cudaStreamSynchronize(m_stream);
         }
 
         //! \brief Copy the census result to host memory.
         //! \param dst Pointer to host memory.
         void copyResultToHostMemory(void *dst)
         {
-            m_dCensus.download(dst);
+            m_dCensus.download(dst, m_stream);
+            cudaStreamSynchronize(m_stream);
         }
     };
 
