@@ -250,7 +250,7 @@ namespace sgm
                                 f = (f << 1) | (center > p_m3);
                                 f = (f << 1) | (center > p_m2);
                                 f = (f << 1) | (center > p_m1);
-                                // skip p_0 (center pixel)
+                                f = (f << 1) | (center > center);
                                 f = (f << 1) | (center > p_p1);
                                 f = (f << 1) | (center > p_p2);
                                 f = (f << 1) | (center > p_p3);
